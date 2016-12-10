@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -30,6 +30,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/tick.h>
 #include <asm/smp_plat.h>
+#include "acpuclock.h"
 #include <linux/suspend.h>
 
 #define MAX_LONG_SIZE 24
@@ -53,6 +54,40 @@ struct cpu_load_data {
 };
 
 static DEFINE_PER_CPU(struct cpu_load_data, cpuload);
+
+static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu, u64 *wall)
+{
+	u64 idle_time;
+	u64 cur_wall_time;
+	u64 busy_time;
+
+	cur_wall_time = jiffies64_to_cputime64(get_jiffies_64());
+
+	busy_time  = kcpustat_cpu(cpu).cpustat[CPUTIME_USER];
+	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SYSTEM];
+	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_IRQ];
+	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SOFTIRQ];
+	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
+	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
+
+	idle_time = cur_wall_time - busy_time;
+	if (wall)
+		*wall = jiffies_to_usecs(cur_wall_time);
+
+	return jiffies_to_usecs(idle_time);
+}
+
+static inline cputime64_t get_cpu_idle_time(unsigned int cpu, cputime64_t *wall)
+{
+	u64 idle_time = get_cpu_idle_time_us(cpu, NULL);
+
+	if (idle_time == -1ULL)
+		return get_cpu_idle_time_jiffy(cpu, wall);
+	else
+		idle_time += get_cpu_iowait_time_us(cpu, wall);
+
+	return idle_time;
+}
 
 static inline cputime64_t get_cpu_iowait_time(unsigned int cpu,
 							cputime64_t *wall)
@@ -164,7 +199,7 @@ static int cpu_hotplug_handler(struct notifier_block *nb,
 	switch (val) {
 	case CPU_ONLINE:
 		if (!this_cpu->cur_freq)
-			this_cpu->cur_freq = cpufreq_quick_get(cpu);
+			this_cpu->cur_freq = acpuclk_get_rate(cpu);
 	case CPU_ONLINE_FROZEN:
 		this_cpu->avg_load_maxfreq = 0;
 	}
@@ -341,12 +376,11 @@ static int __init msm_rq_stats_init(void)
 	int ret;
 	int i;
 	struct cpufreq_policy cpu_policy;
-
-#ifndef CONFIG_SMP
 	/* Bail out if this is not an SMP Target */
-	rq_info.init = 0;
-	return -ENOSYS;
-#endif
+	if (!is_smp()) {
+		rq_info.init = 0;
+		return -ENOSYS;
+	}
 
 	rq_wq = create_singlethread_workqueue("rq_stats");
 	BUG_ON(!rq_wq);
@@ -367,7 +401,7 @@ static int __init msm_rq_stats_init(void)
 		cpufreq_get_policy(&cpu_policy, i);
 		pcpu->policy_max = cpu_policy.cpuinfo.max_freq;
 		if (cpu_online(i))
-			pcpu->cur_freq = cpufreq_quick_get(i);
+			pcpu->cur_freq = acpuclk_get_rate(i);
 		cpumask_copy(pcpu->related_cpus, cpu_policy.cpus);
 	}
 	freq_transition.notifier_call = cpufreq_transition_handler;
@@ -382,11 +416,11 @@ late_initcall(msm_rq_stats_init);
 
 static int __init msm_rq_stats_early_init(void)
 {
-#ifndef CONFIG_SMP
 	/* Bail out if this is not an SMP Target */
-	rq_info.init = 0;
-	return -ENOSYS;
-#endif
+	if (!is_smp()) {
+		rq_info.init = 0;
+		return -ENOSYS;
+	}
 
 	pm_notifier(system_suspend_handler, 0);
 	return 0;
