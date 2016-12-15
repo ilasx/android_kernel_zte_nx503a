@@ -563,23 +563,6 @@ int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, char *command)
 	if (strnicmp((char *)&powermode_val, "1", strlen("1")) == 0) {
 		WL_TRACE_HW4(("DHCP session starts\n"));
 
-#if defined(DHCP_SCAN_SUPPRESS)
-{
-	int ret;
-	dhd_pub_t *dhd =  (dhd_pub_t *)(wl->pub);
-        uint32 mpc = 0;
-	char iovbuf[28];
-
-        bcm_mkiovar("mpc", (char *)&mpc, 4, iovbuf, sizeof(iovbuf));
-        if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-        {
-                WL_ERR(("%s DHCP_SCAN_SUPPRESS: set mpc=0 failed: %d\n", __FUNCTION__,ret));
-        }
-}
-		/* Suppress scan during the DHCP */
-		wl_cfg80211_scan_suppress(dev, 1);
-#endif /* OEM_ANDROID */
-
 #ifdef PKT_FILTER_SUPPORT
 		dhd->dhcp_in_progress = 1;
 
@@ -631,23 +614,6 @@ int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, char *command)
 	}
 	else if (strnicmp((char *)&powermode_val, "2", strlen("2")) == 0) {
 
-
-#if defined(DHCP_SCAN_SUPPRESS)
-{
-	int ret;
-	dhd_pub_t *dhd =  (dhd_pub_t *)(wl->pub);
-        uint32 mpc = 1;
-	char iovbuf[28];
-
-        bcm_mkiovar("mpc", (char *)&mpc, 4, iovbuf, sizeof(iovbuf));
-        if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-        {
-               WL_ERR(("%s DHCP_SCAN_SUPPRESS: set mpc=1 failed: %d\n", __FUNCTION__,ret));
-        }
-}
-		/* Since DHCP is complete, enable the scan back */
-		wl_cfg80211_scan_suppress(dev, 0);
-#endif /* OEM_ANDROID */
 
 #ifdef PKT_FILTER_SUPPORT
 		dhd->dhcp_in_progress = 0;

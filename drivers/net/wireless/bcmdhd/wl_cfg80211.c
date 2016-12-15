@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: wl_cfg80211.c 401050 2013-05-08 13:36:28Z $
+ * $Id: wl_cfg80211.c 403597 2013-05-21 18:37:19Z $
  */
 /* */
 #include <typedefs.h>
@@ -281,7 +281,8 @@ static s32 wl_frame_get_mgmt(u16 fc, const struct ether_addr *da,
 static s32 __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	struct cfg80211_scan_request *request,
 	struct cfg80211_ssid *this_ssid);
-static s32 wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
+static s32
+wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	struct cfg80211_scan_request *request);
 static s32 wl_cfg80211_set_wiphy_params(struct wiphy *wiphy, u32 changed);
 static s32 wl_cfg80211_join_ibss(struct wiphy *wiphy, struct net_device *dev,
@@ -298,7 +299,8 @@ static int wl_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 	struct cfg80211_connect_params *sme);
 static s32 wl_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *dev,
 	u16 reason_code);
-static s32 wl_cfg80211_set_tx_power(struct wiphy *wiphy,
+static s32
+wl_cfg80211_set_tx_power(struct wiphy *wiphy,
 	enum nl80211_tx_power_setting type, s32 dbm);
 static s32 wl_cfg80211_get_tx_power(struct wiphy *wiphy, s32 *dbm);
 static s32 wl_cfg80211_config_default_key(struct wiphy *wiphy,
@@ -469,10 +471,6 @@ static s32 wl_update_bss_info(struct wl_priv *wl, struct net_device *ndev, u8 is
 static chanspec_t wl_cfg80211_get_shared_freq(struct wiphy *wiphy);
 s32 wl_cfg80211_channel_to_freq(u32 channel);
 
-#if defined(DHCP_SCAN_SUPPRESS)
-static void wl_cfg80211_work_handler(struct work_struct *work);
-static void wl_cfg80211_scan_supp_timerfunc(ulong data);
-#endif /* DHCP_SCAN_SUPPRESS */
 
 static void wl_cfg80211_work_handler(struct work_struct *work);
 static s32 wl_add_keyext(struct wiphy *wiphy, struct net_device *dev,
@@ -1208,7 +1206,6 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy, char *name,
 
 		memset(wl->p2p->vir_ifname, 0, IFNAMSIZ);
 		strncpy(wl->p2p->vir_ifname, name, IFNAMSIZ - 1);
-
 #if 0
                 wl_notify_escan_complete(wl, _ndev, true, true);
 #else
@@ -1300,6 +1297,10 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy, char *name,
 				else if (type == NL80211_IFTYPE_P2P_GO)
 					dhd_mode = DHD_FLAG_P2P_GO_MODE;
 				DNGL_FUNC(dhd_cfg80211_set_p2p_info, (wl, dhd_mode));
+#ifdef PROP_TXSTATUS_VSDB
+				if (dhd->plat_enable)
+					dhd->plat_enable((void *)dhd);
+#endif /* PROP_TXSTATUS_VSDB */
 				/* reinitialize completion to clear previous count */
 				INIT_COMPLETION(wl->iface_disable);
 			} else {
@@ -1322,6 +1323,8 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy, char *name,
 		if (dhd->wlfc_enabled && wl->wlfc_on) {
 			dhd->wlfc_enabled = false;
 			dhd_wlfc_deinit(dhd);
+			if (dhd->plat_deinit)
+				dhd->plat_deinit((void *)dhd);
 			wl->wlfc_on = false;
 		}
 #endif /* PROP_TXSTATUS_VSDB */
@@ -1641,6 +1644,8 @@ wl_cfg80211_ifdel_ops(struct net_device *ndev)
 		if (dhd->wlfc_enabled && wl->wlfc_on) {
 			dhd->wlfc_enabled = false;
 			dhd_wlfc_deinit(dhd);
+			if (dhd->plat_deinit)
+				dhd->plat_deinit((void *)dhd);
 			wl->wlfc_on = false;
 		}
 #endif /* PROP_TXSTATUS_VSDB */
@@ -2440,7 +2445,7 @@ scan_out:
 			wl_notify_escan_complete(wl, ndev, true, true);
 
 #if 0
-			wl_cfg80211_disconnect(wiphy, ndev, DOT11_RC_DISASSOC_LEAVING);
+			wl_cfg80211_scan_abort(wl);
 #else
 			if (!disconnect_flag) {
 				if (wl_get_drv_status(wl, CONNECTING, ndev)) {
@@ -4801,11 +4806,11 @@ wl_cfg80211_config_p2p_pub_af_tx(struct wiphy *wiphy,
 	}
 	case P2P_PAF_PROVDIS_RSP: {
 		wl->next_af_subtype = P2P_PAF_GON_REQ;
+		af_params->dwell_time = WL_MIN_DWELL_TIME;
 #if 0
 		/* increase dwell time to MED level */
 		af_params->dwell_time = WL_MED_DWELL_TIME;
 #else
-		af_params->dwell_time = WL_MIN_DWELL_TIME;
 #endif
 #ifdef WL_CFG80211_SYNC_GON
 		config_af_params->extra_listen = false;
@@ -5088,7 +5093,7 @@ wl_cfg80211_mgmt_tx(struct wiphy *wiphy, struct net_device *ndev,
 
 	/* find bssidx based on ndev */
 	if (wl_cfgp2p_find_idx(wl, dev, &bssidx) != BCME_OK) {
-		WL_ERR(("Find p2p index from ndev(%p) failed\n", dev));
+		WL_ERR(("Find p2p index from dev(%p) failed\n", dev));
 		return BCME_ERROR;
 	}
 	if (p2p_is_on(wl)) {
@@ -6659,11 +6664,11 @@ s32 wl_mode_to_nl80211_iftype(s32 mode)
 	return err;
 }
 
+#ifdef CONFIG_CFG80211_INTERNAL_REGDB
 /*  	Kernel Network Support->Wireless->Regulatory rules database
 	options should be enabled and regulatory  CRDA regdb table populated in Kernel
 	for proper country reg notification
 */
-#ifdef CONFIG_CFG80211_INTERNAL_REGDB
 static int
 wl_cfg80211_reg_notifier(
 	struct wiphy *wiphy,
@@ -7176,7 +7181,7 @@ wl_notify_connect_status_ap(struct wl_priv *wl, struct net_device *ndev,
 			kfree(body);
 		return -EINVAL;
 	}
-#if LINUX_VERSION_CODE == KERNEL_VERSION(2, 6, 38) && !defined(WL_COMPAT_WIRELESS)
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2, 6, 38)
 	freq = ieee80211_channel_to_frequency(channel);
 	(void)band->band;
 #else
@@ -8012,8 +8017,10 @@ wl_notify_rx_mgmt_frame(struct wl_priv *wl, struct net_device *ndev,
 			 *  if we got normal action frame and ndev is p2p0,
 			 *  we have to change ndev from p2p0 to wlan0
 			 */
+#if defined(WL_ENABLE_P2P_IF)
 			if (wl->p2p_net == ndev)
 				ndev = wl_to_prmry_ndev(wl);
+#endif /* WL_ENABLE_P2P_IF */
 		}
 
 		if (act_frm) {
@@ -9643,13 +9650,18 @@ static s32 wl_event_handler(void *data)
 			 * there is no corresponding bsscfg for P2P interface. Map it to p2p0
 			 * interface.
 			 */
+#if defined(WL_ENABLE_P2P_IF)
 			if ((wl_is_p2p_event(e) == TRUE) && (wl->p2p_net)) {
 				netdev = wl->p2p_net;
 			} else {
 				netdev = dhd_idx2net((struct dhd_pub *)(wl->pub), e->emsg.ifidx);
 			}
-			if (!netdev)
+#endif 
+			if (!netdev) {
+#if defined(WL_ENABLE_P2P_IF)
 				netdev = wl_to_prmry_ndev(wl);
+#endif 
+			}
 			if (e->etype < WLC_E_LAST && wl->evt_handler[e->etype]) {
 				wl->evt_handler[e->etype] (wl, netdev, &e->emsg, e->edata);
 			} else {
@@ -10219,13 +10231,6 @@ static s32 __wl_cfg80211_up(struct wl_priv *wl)
 	}
 #endif /* WL_HOST_BAND_MGMT */
 
-#if defined(DHCP_SCAN_SUPPRESS)
-	/* wlan scan_supp timer and work thread info */
-	init_timer(&wl->scan_supp_timer);
-	wl->scan_supp_timer.data = (ulong)wl;
-	wl->scan_supp_timer.function = wl_cfg80211_scan_supp_timerfunc;
-	INIT_WORK(&wl->wlan_work, wl_cfg80211_work_handler);
-#endif /* DHCP_SCAN_SUPPRESS */
 	INIT_DELAYED_WORK(&wl->pm_enable_work, wl_cfg80211_work_handler);
 	wl_set_drv_status(wl, READY, ndev);
 	return err;
@@ -10247,14 +10252,6 @@ static s32 __wl_cfg80211_down(struct wl_priv *wl)
 		wl->pm_enable_work_on = false;
 	}
 
-#if defined(DHCP_SCAN_SUPPRESS)
-	/* Force clear of scan_suppress */
-	if (wl->scan_suppressed)
-		wl_cfg80211_scan_suppress(ndev, 0);
-	if (timer_pending(&wl->scan_supp_timer))
-		del_timer_sync(&wl->scan_supp_timer);
-	cancel_work_sync(&wl->wlan_work);
-#endif /* DHCP_SCAN_SUPPRESS */
 
 	/* If primary BSS is operational (for e.g SoftAP), bring it down */
 	if (!(wl_cfgp2p_find_idx(wl, ndev, &bssidx)) &&
@@ -11462,75 +11459,6 @@ wl_cfg80211_set_band(struct net_device *ndev, int band)
 	return 0;
 }
 #endif /* WL_HOST_BAND_MGMT */
-
-#if defined(DHCP_SCAN_SUPPRESS)
-static void wl_cfg80211_scan_supp_timerfunc(ulong data)
-{
-	struct wl_priv *wl = (struct wl_priv *)data;
-
-	WL_DBG(("Enter \n"));
-	schedule_work(&wl->wlan_work);
-}
-
-static void wl_cfg80211_work_handler(struct work_struct *work)
-{
-	struct wl_priv *wl = wlcfg_drv_priv;
-
-	wl = container_of(work, struct wl_priv, wlan_work);
-
-	/* scan request can come with empty request : perform all default scan */
-	if (!wl) {
-		WL_ERR(("wl_priv ptr NULL\n"));
-		return;
-	}
-
-	if (wl->scan_suppressed) {
-		/* There is pending scan_suppress. Clean it */
-		WL_ERR(("Clean up from timer after %d msec\n", WL_SCAN_SUPPRESS_TIMEOUT));
-		wl_cfg80211_scan_suppress(wl_to_prmry_ndev(wl), 0);
-	}
-}
-
-int wl_cfg80211_scan_suppress(struct net_device *dev, int suppress)
-{
-	struct wl_priv *wl = wlcfg_drv_priv;
-	int ret = 0;
-
-	if (!dev || !wl || ((suppress != 0) && (suppress != 1)))
-		return -EINVAL;
-
-	if (suppress == wl->scan_suppressed) {
-		WL_DBG(("No change in scan_suppress state. Ignoring cmd..\n"));
-		return 0;
-	}
-
-	if (timer_pending(&wl->scan_supp_timer))
-		del_timer_sync(&wl->scan_supp_timer);
-
-	if ((ret = wldev_ioctl(dev, WLC_SET_SCANSUPPRESS,
-		&suppress, sizeof(int), true)) < 0) {
-		WL_ERR(("Scan suppress setting failed ret:%d \n", ret));
-	} else {
-		WL_DBG(("Scan suppress %s \n", suppress ? "Enabled" : "Disabled"));
-		wl->scan_suppressed = suppress;
-	}
-
-	/* If scan_suppress is set, Start a timer to monitor it (just incase) */
-	if (wl->scan_suppressed) {
-		if (ret) {
-			WL_ERR(("Retry scan_suppress reset at a later time \n"));
-			mod_timer(&wl->scan_supp_timer,
-				jiffies + msecs_to_jiffies(WL_SCAN_SUPPRESS_RETRY));
-		} else {
-			WL_DBG(("Start wlan_timer to clear of scan_suppress \n"));
-			mod_timer(&wl->scan_supp_timer,
-				jiffies + msecs_to_jiffies(WL_SCAN_SUPPRESS_TIMEOUT));
-		}
-	}
-
-	return ret;
-}
-#endif /* DHCP_SCAN_SUPPRESS */
 
 static void wl_cfg80211_work_handler(struct work_struct * work)
 {

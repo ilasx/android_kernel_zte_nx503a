@@ -3,7 +3,7 @@
  *
  * $Copyright Open Broadcom Corporation$
  *
- * $Id: bcmdevs.h 387183 2013-02-24 07:42:07Z $
+ * $Id: bcmdevs.h 401468 2013-05-10 13:46:09Z $
  */
 
 #ifndef	_BCMDEVS_H
@@ -279,7 +279,6 @@
 #define BCM43340_CHIP_ID    43340       
 #define BCM43341_CHIP_ID	43341		
 #define BCM43342_CHIP_ID	43342		
-#define BCM4335_CHIP_ID         0x4335
 #define BCM4350_CHIP_ID		0x4350          
 
 #define	BCM4342_CHIP_ID		4342		

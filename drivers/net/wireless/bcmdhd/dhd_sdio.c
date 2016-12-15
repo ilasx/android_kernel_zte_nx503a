@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_sdio.c 399337 2013-04-29 23:39:03Z $
+ * $Id: dhd_sdio.c 402604 2013-05-16 08:36:25Z $
  */
 
 #include <typedefs.h>
@@ -1553,7 +1553,7 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 #endif /* WLMEDIA_HTSF */
 
 	/* Add alignment padding, allocate new packet if needed */
-	if (!((uintptr)frame & 1) && (pad1 = ((uintptr)frame % DHD_SDALIGN))) {
+	if ((pad1 = ((uintptr)frame % DHD_SDALIGN))) {
 		if (PKTHEADROOM(osh, pkt) < pad1) {
 			DHD_INFO(("%s: insufficient headroom %d for %d pad1\n",
 			          __FUNCTION__, (int)PKTHEADROOM(osh, pkt), pad1));
@@ -1733,8 +1733,11 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 		DHD_INFO(("%s 3: insufficient tailroom %d for %d real_pad\n",
 		__FUNCTION__, (int)PKTTAILROOM(osh, pkt), real_pad));
 		if (PKTPADTAILROOM(osh, pkt, real_pad)) {
-			DHD_ERROR(("padding error size %d\n", real_pad));
-		}
+			DHD_ERROR(("CHK3: padding error size %d\n", real_pad));
+			ret = BCME_NOMEM;
+			goto done;
+		} else
+			PKTSETLEN(osh, pkt, act_len);
 	}
 	}
 	do {
@@ -6670,6 +6673,8 @@ dhdsdio_chipmatch(uint16 chipid)
 		return TRUE;
 	if (chipid == BCM4339_CHIP_ID)
 		return TRUE;
+	if (chipid == BCM4339_CHIP_ID)
+		return TRUE;
 	if (chipid == BCM4350_CHIP_ID)
 		return TRUE;
 	return FALSE;
@@ -7177,12 +7182,6 @@ dhdsdio_probe_attach(struct dhd_bus *bus, osl_t *osh, void *sdh, void *regsva,
 		DHD_ERROR(("%s: FAILED to return to SI_ENUM_BASE\n", __FUNCTION__));
 	}
 
-#ifdef DHD_DEBUG
-	DHD_ERROR(("F1 signature read @0x18000000=0x%4x\n",
-	       bcmsdh_reg_read(bus->sdh, SI_ENUM_BASE, 4)));
-
-#endif /* DHD_DEBUG */
-
 
 	/* Force PLL off until si_attach() programs PLL control regs */
 
@@ -7256,6 +7255,13 @@ dhdsdio_probe_attach(struct dhd_bus *bus, osl_t *osh, void *sdh, void *regsva,
 	if (((uint16)bus->sih->chip == BCM4324_CHIP_ID) && (bus->sih->chiprev < 3))
 			dhdsdio_sdio_hang_war(bus);
 #endif /* REGON_BP_HANG_FIX */
+
+#ifdef DHD_DEBUG
+	DHD_ERROR(("F1 signature OK, socitype:0x%x chip:0x%4x rev:0x%x pkg:0x%x\n",
+		bus->sih->socitype, bus->sih->chip, bus->sih->chiprev,
+		bus->sih->chippkg));
+#endif /* DHD_DEBUG */
+
 
 	bcmsdh_chipinfo(sdh, bus->sih->chip, bus->sih->chiprev);
 
