@@ -763,7 +763,11 @@ wl_get_netinfo_by_netdev(struct wl_priv *wl, struct net_device *ndev)
 }
 #define wl_to_wiphy(w) (w->wdev->wiphy)
 #define wl_to_prmry_ndev(w) (w->wdev->netdev)
+#define wl_to_prmry_wdev(w) (w->wdev)
+#define wl_to_p2p_wdev(w) (w->p2p_wdev)
 #define ndev_to_wl(n) (wdev_to_wl(n->ieee80211_ptr))
+#define ndev_to_wdev(ndev) (ndev->ieee80211_ptr)
+#define wdev_to_ndev(wdev) (wdev->netdev)
 #define wl_to_sr(w) (w->scan_req_int)
 #if defined(STATIC_WL_PRIV_STRUCT)
 #define wl_to_ie(w) (w->ie)
@@ -860,6 +864,7 @@ extern int wl_cfg80211_scan_suppress(struct net_device *dev, int suppress);
 extern void wl_cfg80211_add_to_eventbuffer(wl_eventmsg_buf_t *ev, u16 event, bool set);
 extern s32 wl_cfg80211_apply_eventbuffer(struct net_device *ndev,
 	struct wl_priv *wl, wl_eventmsg_buf_t *ev);
+extern void get_primary_mac(struct wl_priv *wl, struct ether_addr *mac);
 #define SCAN_BUF_CNT	2
 #define SCAN_BUF_NEXT	1
 #define wl_escan_set_sync_id(a, b) ((a) = htod16(0x1234))
