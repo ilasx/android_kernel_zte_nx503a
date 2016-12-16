@@ -4,7 +4,7 @@
  *
  * $Copyright Open Broadcom Corporation$
  *
- * $Id: linuxver.h 397171 2013-04-17 14:22:23Z $
+ * $Id: linuxver.h 407802 2013-06-14 13:59:38Z $
  */
 
 #ifndef _linuxver_h_
@@ -50,6 +50,7 @@
 #include <linux/string.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
+#include <linux/kthread.h>
 #include <linux/netdevice.h>
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27))
 #include <linux/semaphore.h>
@@ -135,7 +136,11 @@ typedef irqreturn_t(*FN_ISR) (int irq, void *dev_id, struct pt_regs *ptregs);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 32)
 #include <linux/sched.h>
-#endif
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 32) */
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0))
+#include <linux/sched/rt.h>
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0) */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29)
 #include <net/lib80211.h>
@@ -147,7 +152,6 @@ typedef irqreturn_t(*FN_ISR) (int irq, void *dev_id, struct pt_regs *ptregs);
 #include <net/ieee80211.h>
 #endif
 #endif 
-
 
 
 #ifndef __exit
@@ -495,7 +499,6 @@ typedef struct {
 #define SMP_RD_BARRIER_DEPENDS(x) smp_rmb(x)
 #endif
 
-#ifdef USE_KTHREAD_API
 #define PROC_START(thread_func, owner, tsk_ctl, flags, name) \
 { \
 	sema_init(&((tsk_ctl)->sema), 0); \
@@ -508,21 +511,6 @@ typedef struct {
 	DBG_THR(("%s(): thread:%s:%lx started\n", __FUNCTION__, \
 		(tsk_ctl)->proc_name, (tsk_ctl)->thr_pid)); \
 }
-#else
-#define PROC_START(thread_func, owner, tsk_ctl, flags, name) \
-{ \
-	sema_init(&((tsk_ctl)->sema), 0); \
-	init_completion(&((tsk_ctl)->completed)); \
-	(tsk_ctl)->parent = owner; \
-	(tsk_ctl)->proc_name = name;  \
-	(tsk_ctl)->terminated = FALSE; \
-	(tsk_ctl)->thr_pid = kernel_thread(thread_func, tsk_ctl, flags); \
-	if ((tsk_ctl)->thr_pid > 0) \
-		wait_for_completion(&((tsk_ctl)->completed)); \
-	DBG_THR(("%s(): thread:%s:%lx started\n", __FUNCTION__, \
-		(tsk_ctl)->proc_name, (tsk_ctl)->thr_pid)); \
-}
-#endif 
 
 #define PROC_STOP(tsk_ctl) \
 { \
@@ -619,4 +607,16 @@ do {									\
 #define netdev_priv(dev) dev->priv
 #endif 
 
-#endif 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+#define RANDOM32	prandom_u32
+#else
+#define RANDOM32	random32
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0) */
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+#define SRANDOM32(entropy)	prandom_seed(entropy)
+#else
+#define SRANDOM32(entropy)	srandom32(entropy)
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0) */
+
+#endif /* _linuxver_h_ */

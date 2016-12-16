@@ -1806,7 +1806,7 @@ typedef struct {
 #define WL_AUTH_SHARED_KEY		1	/* d11 shared authentication */
  /* try open, then shared if open failed w/rc 13 */
 
-#define WL_AUTH_OPEN_SHARED		3	/* try open, then shared if open failed w/rc 13 */
+#define WL_AUTH_OPEN_SHARED		2	 /* try open, then shared if open failed w/rc 13 */ 
 #endif /* LINUX_POSTMOGRIFY_REMOVAL */
 
 /* Bit masks for radio disabled status - returned by WL_GET_RADIO */

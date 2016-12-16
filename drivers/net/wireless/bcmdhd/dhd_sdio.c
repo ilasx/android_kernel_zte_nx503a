@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_sdio.c 402604 2013-05-16 08:36:25Z $
+ * $Id: dhd_sdio.c 408340 2013-06-18 17:35:43Z $
  */
 
 #include <typedefs.h>
@@ -1503,6 +1503,234 @@ dhd_enable_oob_intr(struct dhd_bus *bus, bool enable)
 }
 #endif 
 
+#ifdef DHDTCPACK_SUPPRESS
+extern bool dhd_use_tcpack_suppress;
+
+/* Please be sure this function is called under dhd_os_tcpacklock() */
+void dhd_onoff_tcpack_sup(void *pub, bool on)
+{
+	dhd_pub_t *dhdp = (dhd_pub_t *)pub;
+
+	if (dhd_use_tcpack_suppress != on) {
+
+		DHD_ERROR(("dhd_onoff_tcpack_sup: %d -> %d\n", dhd_use_tcpack_suppress, on));
+		dhd_use_tcpack_suppress = on;
+		dhdp->tcp_ack_info_cnt = 0;
+		bzero(dhdp->tcp_ack_info_tbl, sizeof(struct tcp_ack_info)*MAXTCPSTREAMS);
+
+	} else
+		DHD_ERROR(("dhd_onoff_tcpack_sup: alread %d\n", on));
+
+	return;
+}
+
+inline void dhd_tcpack_check_xmit(dhd_pub_t *dhdp, void *pkt)
+{
+	uint8 i;
+	tcp_ack_info_t *tcp_ack_info = NULL;
+	int tbl_cnt;
+
+	dhd_os_tcpacklock(dhdp);
+	tbl_cnt = dhdp->tcp_ack_info_cnt;
+	for (i = 0; i < tbl_cnt; i++) {
+		tcp_ack_info = &dhdp->tcp_ack_info_tbl[i];
+		if (tcp_ack_info->p_tcpackinqueue == pkt) {
+			/* This pkt is being transmitted so remove the tcp_ack_info of it.
+			* compact the array unless the last element,
+			* then the pkt's array is removed.
+			*/
+			if (i < tbl_cnt-1) {
+				memmove(&dhdp->tcp_ack_info_tbl[i],
+					&dhdp->tcp_ack_info_tbl[i+1],
+					sizeof(struct tcp_ack_info)*(tbl_cnt - (i+1)));
+			}
+			bzero(&dhdp->tcp_ack_info_tbl[tbl_cnt-1], sizeof(struct tcp_ack_info));
+			if (--dhdp->tcp_ack_info_cnt < 0) {
+				DHD_ERROR(("dhdsdio_sendfromq:(ERROR) tcp_ack_info_cnt %d"
+				" Stop using tcpack_suppress\n", dhdp->tcp_ack_info_cnt));
+				dhd_onoff_tcpack_sup(dhdp, FALSE);
+			}
+			break;
+		}
+	}
+	dhd_os_tcpackunlock(dhdp);
+}
+
+bool
+dhd_tcpack_suppress(dhd_pub_t *dhdp, void *pkt)
+{
+	uint8 *eh_header;
+	uint16 eh_type;
+	uint8 *ip_header;
+	uint8 *tcp_header;
+	uint32 ip_hdr_len;
+	uint32 cur_framelen;
+	uint8 bdc_hdr_len = BDC_HEADER_LEN;
+	uint8 wlfc_hdr_len = 0;
+	uint8 *data = PKTDATA(dhdp->osh, pkt);
+	cur_framelen = PKTLEN(dhdp->osh, pkt);
+
+#ifdef PROP_TXSTATUS
+	/* In this case, BDC header is not pushed in dhd_sendpkt() */
+	if (dhdp->wlfc_state) {
+		bdc_hdr_len = 0;
+		wlfc_hdr_len = 8;
+	}
+#endif
+	if (cur_framelen < bdc_hdr_len + ETHER_HDR_LEN) {
+		DHD_TRACE(("dhd_tcpack_suppress: Too short packet length %d\n", cur_framelen));
+		return FALSE;
+	}
+
+	/* Get rid of BDC header */
+	eh_header = data + bdc_hdr_len;
+	cur_framelen -= bdc_hdr_len;
+	eh_type = eh_header[12] << 8 | eh_header[13];
+
+	if (eh_type != ETHER_TYPE_IP) {
+		DHD_TRACE(("dhd_tcpack_suppress: Not a IP packet 0x%x\n", eh_type));
+		return FALSE;
+	}
+
+	DHD_TRACE(("dhd_tcpack_suppress: IP pkt! 0x%x\n", eh_type));
+
+	ip_header = eh_header + ETHER_HDR_LEN;
+	cur_framelen -= ETHER_HDR_LEN;
+	ip_hdr_len = 4 * (ip_header[0] & 0x0f);
+
+	if ((ip_header[0] & 0xf0) != 0x40) {
+		DHD_TRACE(("dhd_tcpack_suppress: Not IPv4!\n"));
+		return FALSE;
+	}
+
+	if (cur_framelen < ip_hdr_len) {
+		DHD_ERROR(("dhd_tcpack_suppress: IP packet length %d wrong!\n", cur_framelen));
+		return FALSE;
+	}
+
+	/* not tcp */
+	if (ip_header[9] != 0x06) {
+		DHD_TRACE(("dhd_tcpack_suppress: Not a TCP packet 0x%x\n", ip_header[9]));
+		return FALSE;
+	}
+
+	DHD_TRACE(("dhd_tcpack_suppress: TCP pkt!\n"));
+
+	tcp_header = ip_header + ip_hdr_len;
+
+	/* is it an ack ? */
+	if (tcp_header[13] == 0x10) {
+#if defined(DHD_DEBUG)
+		uint32 tcp_seq_num = tcp_header[4] << 24 | tcp_header[5] << 16 |
+			tcp_header[6] << 8 | tcp_header[7];
+#endif 
+		uint32 tcp_ack_num = tcp_header[8] << 24 | tcp_header[9] << 16 |
+			tcp_header[10] << 8 | tcp_header[11];
+		uint16 ip_tcp_ttllen =  (ip_header[3] & 0xff) + (ip_header[2] << 8);
+		uint32 tcp_hdr_len = 4*((tcp_header[12] & 0xf0) >> 4);
+		DHD_TRACE(("dhd_tcpack_suppress: TCP ACK seq %ud ack %ud\n",
+			tcp_seq_num, tcp_ack_num));
+
+
+		/* zero length ? */
+		if (ip_tcp_ttllen ==  ip_hdr_len + tcp_hdr_len) {
+			int i;
+			tcp_ack_info_t *tcp_ack_info = NULL;
+			DHD_TRACE(("dhd_tcpack_suppress: TCP ACK zero length\n"));
+			/* Look for tcp_ack_info that has the same
+			* ip src/dst addrs and tcp src/dst ports
+			*/
+			dhd_os_tcpacklock(dhdp);
+			for (i = 0; i < dhdp->tcp_ack_info_cnt; i++) {
+				if (dhdp->tcp_ack_info_tbl[i].p_tcpackinqueue &&
+				!memcmp(&ip_header[12], dhdp->tcp_ack_info_tbl[i].ipaddrs, 8) &&
+				!memcmp(tcp_header, dhdp->tcp_ack_info_tbl[i].tcpports, 4)) {
+					tcp_ack_info = &dhdp->tcp_ack_info_tbl[i];
+					break;
+				}
+			}
+
+			if (i == dhdp->tcp_ack_info_cnt && i < MAXTCPSTREAMS)
+				tcp_ack_info = &dhdp->tcp_ack_info_tbl[dhdp->tcp_ack_info_cnt++];
+
+			if (!tcp_ack_info) {
+				DHD_TRACE(("dhd_tcpack_suppress: No empty tcp ack info"
+					"%d %d %d %d, %d %d %d %d\n",
+					tcp_header[0], tcp_header[1], tcp_header[2], tcp_header[3],
+					dhdp->tcp_ack_info_tbl[i].tcpports[0],
+					dhdp->tcp_ack_info_tbl[i].tcpports[1],
+					dhdp->tcp_ack_info_tbl[i].tcpports[2],
+					dhdp->tcp_ack_info_tbl[i].tcpports[3]));
+				dhd_os_tcpackunlock(dhdp);
+				return FALSE;
+			}
+
+			if (tcp_ack_info->p_tcpackinqueue) {
+				if (tcp_ack_num > tcp_ack_info->tcpack_number) {
+					void *prevpkt = tcp_ack_info->p_tcpackinqueue;
+					uint8 pushed_len = SDPCM_HDRLEN +
+						(BDC_HEADER_LEN - bdc_hdr_len) + wlfc_hdr_len;
+#ifdef PROP_TXSTATUS
+					/* In case the prev pkt is delayenqueued
+					* but not delayedequeued yet, it may not have
+					* any additional header yet.
+					*/
+					if (dhdp->wlfc_state &&	(PKTLEN(dhdp->osh, prevpkt) ==
+						tcp_ack_info->ip_tcp_ttllen + ETHER_HDR_LEN))
+						pushed_len = 0;
+#endif
+					if ((ip_tcp_ttllen == tcp_ack_info->ip_tcp_ttllen) &&
+						(PKTLEN(dhdp->osh, pkt) ==
+						PKTLEN(dhdp->osh, prevpkt) - pushed_len)) {
+						bcopy(PKTDATA(dhdp->osh, pkt),
+							PKTDATA(dhdp->osh, prevpkt) + pushed_len,
+							PKTLEN(dhdp->osh, pkt));
+						PKTFREE(dhdp->osh, pkt, FALSE);
+						DHD_TRACE(("dhd_tcpack_suppress: pkt 0x%p"
+							" TCP ACK replace %ud -> %ud\n", prevpkt,
+							tcp_ack_info->tcpack_number, tcp_ack_num));
+						tcp_ack_info->tcpack_number = tcp_ack_num;
+						dhd_os_tcpackunlock(dhdp);
+						return TRUE;
+					} else
+						DHD_TRACE(("dhd_tcpack_suppress: len mismatch"
+							" %d(%d) %d(%d)\n",
+							PKTLEN(dhdp->osh, pkt), ip_tcp_ttllen,
+							PKTLEN(dhdp->osh, prevpkt),
+							tcp_ack_info->ip_tcp_ttllen));
+				} else {
+#ifdef TCPACK_TEST
+					void *prevpkt = tcp_ack_info->p_tcpackinqueue;
+#endif
+					DHD_TRACE(("dhd_tcpack_suppress: TCP ACK number reverse"
+							" prev %ud (0x%p) new %ud (0x%p)\n",
+							tcp_ack_info->tcpack_number,
+							tcp_ack_info->p_tcpackinqueue,
+							tcp_ack_num, pkt));
+#ifdef TCPACK_TEST
+					if (PKTLEN(dhdp->osh, pkt) == PKTLEN(dhdp->osh, prevpkt)) {
+						PKTFREE(dhdp->osh, pkt, FALSE);
+						dhd_os_tcpackunlock(dhdp);
+						return TRUE;
+					}
+#endif
+				}
+			} else {
+				tcp_ack_info->p_tcpackinqueue = pkt;
+				tcp_ack_info->tcpack_number = tcp_ack_num;
+				tcp_ack_info->ip_tcp_ttllen = ip_tcp_ttllen;
+				bcopy(&ip_header[12], tcp_ack_info->ipaddrs, 8);
+				bcopy(tcp_header, tcp_ack_info->tcpports, 4);
+			}
+			dhd_os_tcpackunlock(dhdp);
+		} else
+			DHD_TRACE(("dhd_tcpack_suppress: TCP ACK with DATA len %d\n",
+				ip_tcp_ttllen - ip_hdr_len - tcp_hdr_len));
+	}
+	return FALSE;
+}
+#endif /* DHDTCPACK_SUPPRESS */
+
 /* Writes a HW/SW header into the packet and sends it. */
 /* Assumes: (a) header space already there, (b) caller holds lock */
 static int
@@ -1511,7 +1739,7 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 	int ret;
 	osl_t *osh;
 	uint8 *frame;
-	uint16 len, pad1 = 0;
+	uint16 len, pad1 = 0, act_len = 0;
 	uint32 swheader;
 	uint retries = 0;
 	uint32 real_pad = 0;
@@ -1527,6 +1755,11 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 	htsfts_t *htsf_ts;
 #endif
 
+#ifdef DHDTCPACK_SUPPRESS
+	if (dhd_use_tcpack_suppress) {
+		dhd_tcpack_check_xmit(bus->dhd, pkt);
+	}
+#endif /* DHDTCPACK_SUPPRESS */
 
 	DHD_TRACE(("%s: Enter\n", __FUNCTION__));
 
@@ -1593,7 +1826,8 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 
 #ifdef BCMSDIOH_TXGLOM
 	if (bus->glom_enable) {
-		uint32 hwheader1 = 0, hwheader2 = 0, act_len = len;
+		uint32 hwheader1 = 0, hwheader2 = 0;
+		act_len = len;
 
 		/* Software tag: channel, sequence number, data offset */
 		swheader = ((chan << SDPCM_CHANNEL_SHIFT) & SDPCM_CHANNEL_MASK) |
@@ -1619,8 +1853,15 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 				DHD_INFO(("%s 1: insufficient tailroom %d for %d real_pad\n",
 				__FUNCTION__, (int)PKTTAILROOM(osh, pkt), real_pad));
 				if (PKTPADTAILROOM(osh, pkt, real_pad)) {
-					DHD_ERROR(("padding error size %d\n", real_pad));
-				}
+					DHD_ERROR(("CHK1: padding error size %d\n", real_pad));
+					ret = BCME_NOMEM;
+					goto done;
+				}						
+#ifndef BCMLXSDMMC
+				else
+					PKTSETLEN(osh, pkt, act_len);
+#endif
+				
 			}
 #ifdef BCMLXSDMMC
 			PKTSETLEN(osh, pkt, len);
@@ -1664,8 +1905,24 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 					" for %d real_pad\n",
 					__FUNCTION__, (int)PKTTAILROOM(osh, pkt), real_pad));
 					if (PKTPADTAILROOM(osh, pkt, real_pad)) {
-						DHD_ERROR(("padding error size %d\n", real_pad));
-					}
+						DHD_ERROR(("CHK2: padding error size %d."
+							" %d more pkts are discarded together.\n",
+							real_pad, bus->glom_cnt));
+						/* Save the pkt pointer in bus glom array
+						* Otherwise, this last pkt will not be
+						* cleaned under "goto done"
+						*/
+						bus->glom_pkt_arr[bus->glom_cnt] = pkt;
+						bus->glom_cnt++;
+						bus->glom_total_len += len;
+						ret = BCME_NOMEM;
+						goto done;
+					}							
+#ifndef BCMLXSDMMC
+					else
+						PKTSETLEN(osh, pkt, act_len);
+#endif
+					
 				}
 #ifdef BCMLXSDMMC
 				PKTSETLEN(osh, pkt, len);
@@ -1685,7 +1942,7 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 	} else
 #endif /* BCMSDIOH_TXGLOM */
 	{
-	uint32 act_len = len;
+	act_len = len;
 	/* Software tag: channel, sequence number, data offset */
 	swheader = ((chan << SDPCM_CHANNEL_SHIFT) & SDPCM_CHANNEL_MASK) | bus->tx_seq |
 	        (((pad1 + SDPCM_HDRLEN) << SDPCM_DOFFSET_SHIFT) & SDPCM_DOFFSET_MASK);
@@ -1736,9 +1993,15 @@ dhdsdio_txpkt(dhd_bus_t *bus, void *pkt, uint chan, bool free_pkt, bool queue_on
 			DHD_ERROR(("CHK3: padding error size %d\n", real_pad));
 			ret = BCME_NOMEM;
 			goto done;
-		} else
+		}
+#ifndef BCMLXSDMMC
+		else
 			PKTSETLEN(osh, pkt, act_len);
+#endif
 	}
+#ifdef BCMLXSDMMC
+	PKTSETLEN(osh, pkt, len);
+#endif /* BCMLXSDMMC */
 	}
 	do {
 		ret = dhd_bcmsdh_send_buf(bus, bcmsdh_cur_sbwad(sdh), SDIO_FUNC_2, F2SYNC,
@@ -1813,7 +2076,11 @@ done:
 		} else
 #endif /* BCMSDIOH_TXGLOM */
 		{
-	PKTPULL(osh, pkt, SDPCM_HDRLEN + pad1);
+#ifdef BCMLXSDMMC
+			if (act_len > 0)
+				PKTSETLEN(osh, pkt, act_len);
+#endif /* BCMLXSDMMC */
+			PKTPULL(osh, pkt, SDPCM_HDRLEN + pad1);
 		}
 #ifdef PROP_TXSTATUS
 	if (bus->dhd->wlfc_state) {
@@ -2001,6 +2268,13 @@ dhd_bus_txdata(struct dhd_bus *bus, void *pkt)
 	dhd_os_sdunlock(bus->dhd);
 #endif /* DHDTHREAD */
 
+#ifdef BCMSDIOH_TXGLOM
+	/* Reset the glom array */
+	if (bus->glom_enable) {
+		bus->glom_cnt = 0;
+		bus->glom_total_len = 0;
+	}
+#endif
 	return ret;
 }
 
@@ -2231,7 +2505,6 @@ dhd_bus_txctl(struct dhd_bus *bus, uchar *msg, uint msglen)
 		len = ROUNDUP(len, ALIGNMENT);
 
 	ASSERT(ISALIGNED((uintptr)frame, 2));
-
 
 	/* Need to lock here to protect txseq and SDIO tx calls */
 	dhd_os_sdlock(bus->dhd);
@@ -4351,7 +4624,6 @@ dhd_bus_init(dhd_pub_t *dhdp, bool enforce_mutex)
 		ret = -1;
 		goto exit;
 	}
-
 
 	/* Force clocks on backplane to be sure F2 interrupt propagates */
 	saveclk = bcmsdh_cfg_read(bus->sdh, SDIO_FUNC_1, SBSDIO_FUNC1_CHIPCLKCSR, &err);
@@ -7182,6 +7454,12 @@ dhdsdio_probe_attach(struct dhd_bus *bus, osl_t *osh, void *sdh, void *regsva,
 		DHD_ERROR(("%s: FAILED to return to SI_ENUM_BASE\n", __FUNCTION__));
 	}
 
+#ifdef BCMSDIOH_TXGLOM
+	/* Setting default Glom mode */
+	bus->glom_mode = bcmsdh_set_mode(bus->sdh, SDPCM_DEFGLOM_MODE);
+	/* Setting default Glom size */
+	bus->glomsize = SDPCM_DEFGLOM_SIZE;
+#endif
 
 	/* Force PLL off until si_attach() programs PLL control regs */
 
@@ -7664,7 +7942,6 @@ dhdsdio_disconnect(void *ptr)
 
 	DHD_TRACE(("%s: Disconnected\n", __FUNCTION__));
 }
-
 
 /* Register/Unregister functions are called by the main DHD entry
  * point (e.g. module insertion) to link with the bus driver, in
